@@ -136,6 +136,7 @@ export default function App() {
   const [revealed, setRevealed] = useState({});
   const [conflict, setConflict] = useState(null);
   const [duplicateNotice, setDuplicateNotice] = useState(null);
+  const [openedVersion, setOpenedVersion] = useState(null);
   const fileInputRef = useRef(null);
 
   const handleFiles = useCallback(async (fileList) => {
@@ -217,28 +218,28 @@ export default function App() {
     );
   }
 
+
   // (g) lock otimista: guarda a versão vista ao abrir a revisão
   function openReview(doc) {
     setSelectedId(doc.id);
+    setOpenedVersion(doc.version);
     setConflict(null);
   }
-
   function confirmReview(id, versionSeenOnOpen) {
-    setDocs((prev) => {
-      const current = prev.find((d) => d.id === id);
-      if (!current) return prev;
-      if (current.version !== versionSeenOnOpen) {
-        // outro atendente alterou este doc enquanto revisávamos
-        setConflict(
-          "Este documento foi alterado por outra pessoa enquanto você revisava. Recarregue os dados antes de confirmar."
-        );
-        return prev;
-      }
-      return prev.map((doc) =>
-        doc.id === id ? { ...doc, status: "done", version: doc.version + 1 } : doc
+    const current = docs.find((d) => d.id === id);
+    if (!current) return;
+    if (current.version !== versionSeenOnOpen) {
+      setConflict(
+        "Este documento foi alterado por outra pessoa enquanto você revisava. Recarregue os dados antes de confirmar."
       );
-    });
-    if (!conflict) setSelectedId(null);
+      return;
+    }
+    setDocs((prev) =>
+      prev.map((doc) =>
+        doc.id === id ? { ...doc, status: "done", version: doc.version + 1 } : doc
+      )
+    );
+    setSelectedId(null);
   }
 
   const filtered = docs.filter(
@@ -249,7 +250,7 @@ export default function App() {
   );
 
   const selected = docs.find((d) => d.id === selectedId);
-  const versionSeenOnOpen = selected ? selected.version : null;
+
 
   const statusLabel = {
     processing: "Processando...",
@@ -358,14 +359,34 @@ export default function App() {
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ flex: 1 }}>
-              <img
-                src={selected.previewUrl}
-                alt={selected.originalName}
-                style={{ maxWidth: "100%", border: "1px solid #ccc" }}
-              />
+              {selected.ext?.toLowerCase() === "pdf" ? (
+                <iframe
+                  src={selected.previewUrl}
+                  title={selected.originalName}
+                  style={{ width: "100%", height: "500px", border: "1px solid #ccc" }}
+                />
+              ) : (
+                <img
+                  src={selected.previewUrl}
+                  alt={selected.originalName}
+                  style={{ maxWidth: "100%", border: "1px solid #ccc" }}
+                />
+              )}
             </div>
             <div style={{ flex: 1 }}>
               <h3>{selected.type}</h3>
+              {import.meta.env.DEV && (
+                <button
+                  onClick={() => {
+                    setDocs(prev => prev.map(d =>
+                      d.id === selected.id ? { ...d, version: d.version + 1 } : d
+                    ));
+                  }}
+                  style={{ fontSize: 11, color: '#b00' }}
+                >
+                  [dev only] simular edição concorrente
+                </button>
+              )}
               <p style={{ fontSize: 12, color: "#777" }}>
                 modelo {selected.modelVersion} · prompt {selected.promptVersion}
               </p>
@@ -419,7 +440,7 @@ export default function App() {
                 );
               })}
 
-              <button onClick={() => confirmReview(selected.id, versionSeenOnOpen)}>
+              <button onClick={() => confirmReview(selected.id, openedVersion)}>
                 Confirmar e concluir
               </button>{" "}
               <button onClick={() => setSelectedId(null)}>Fechar</button>
