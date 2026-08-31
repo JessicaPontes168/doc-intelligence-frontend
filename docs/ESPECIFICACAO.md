@@ -2,85 +2,105 @@
 
 ## Escopo escolhido
 
-Trilha B: interface do atendimento. A API não existe — este documento define o
-contrato que a interface espera, e o front consome um mock que respeita esse
-contrato, para que a troca por uma API real não exija reescrever a tela.
+Escolhi a **Trilha B**, focada na interface do time de atendimento.
 
-## Fatia vertical entregue
+Como a API ainda não existe, criei neste documento o formato que a interface espera receber. No projeto, uso uma API simulada (mock) seguindo esse formato. Dessa forma, futuramente será possível trocar o mock por uma API real sem precisar refazer toda a interface.
 
-Uma tela única cobrindo: envio de vários arquivos de uma vez → acompanhamento do
-status de processamento → fila de revisão (documento original ao lado dos campos
-extraídos) → correção de campo → confirmação → busca nos documentos já
-processados.
+## O que foi desenvolvido
 
-Fora da fatia (não implementado nesta entrega, mas endereçado na seção de riscos
-e no ADR): autenticação, paginação real, múltiplas telas/rotas, upload
-resumível, testes automatizados, deploy.
+A aplicação reúne em uma única tela o fluxo principal:
 
-## Contrato de API assumido (o mock respeita este contrato)
+**envio de vários arquivos → acompanhamento do processamento → revisão dos documentos → correção dos campos → confirmação → busca dos documentos processados.**
 
-```
+Ficaram fora desta entrega itens como autenticação, paginação real, várias telas, upload que possa ser retomado, testes automatizados e deploy.
+
+## Formato da API
+
+O mock segue o seguinte formato:
+
+```text
 POST /documents
-  body: multipart/form-data { file }
-  resposta: { id, status: "processing" }
+Envia um documento e retorna seu ID e o status de processamento.
 
 GET /documents?search=&status=
-  resposta: [{
-    id, originalName, suggestedName, status, type,
-    confidence, fields, version, modelVersion, promptVersion
-  }]
+Busca os documentos já processados, podendo filtrar por nome ou status.
 
 GET /documents/:id
-  resposta: detalhe completo do item acima, incluindo previewUrl
+Busca os detalhes de um documento específico.
 
 PATCH /documents/:id
-  body: { fields, suggestedName, status, expectedVersion }
-  regra: se expectedVersion != version atual no servidor -> 409 Conflict
-  resposta: item atualizado com version incrementada
+Atualiza os campos, o nome sugerido e o status do documento.
+Também verifica se a versão do documento ainda é a mesma antes de salvar.
 ```
 
-O `expectedVersion`/`version` é o mecanismo de lock otimista (ver fato g). No
-mock, isso é simulado em memória no cliente; numa API real, `version` mora no
-banco.
+Cada documento possui informações como:
 
-## Estados de um documento
+* ID
+* Nome original
+* Nome sugerido
+* Status
+* Tipo
+* Nível de confiança
+* Campos extraídos
+* Versão do documento
+* Versão do modelo
+* Versão do prompt
 
-`processing -> done` (confiança alta, segue direto)
-`processing -> review -> done` (confiança baixa, precisa de correção humana)
-`processing -> error` (falha do modelo de terceiro; ver fato a)
+A informação `version` é usada para evitar que duas pessoas alterem o mesmo documento ao mesmo tempo. No mock, essa verificação acontece na memória do navegador. Em uma API real, essa informação ficaria salva no banco de dados.
 
-## Fatos do ambiente e como cada um foi endereçado
+## Estados do documento
 
-- **(a) latência/erro do modelo de terceiro (5–40s, falha ocasional):**
-  a UI trata cada documento como assíncrono desde o upload — a lista mostra
-  "Processando..." e atualiza sozinha quando o resultado chega (ou dá erro).
-  Não há polling bloqueante nem tela travada esperando resposta.
-- **(b) nome de arquivo sem padrão:** o nome original nunca é usado como
-  identidade do documento; a UI propõe um nome padronizado após a extração, que
-  o atendente confirma ou edita antes de concluir.
-- **(c) reenvio do mesmo documento:** hash do conteúdo do arquivo calculado no
-  cliente antes do upload; duplicata é sinalizada e não reprocessada. Registrado
-  como risco: dedupe definitivo exige o mesmo hash no back-end, porque dois
-  atendentes em máquinas diferentes não compartilham estado do navegador.
-- **(d) dado pessoal sensível:** campos extraídos aparecem mascarados por
-  padrão, com opção explícita de revelar; nada de sensível vai para
-  `console.log`. Registrado como risco: mascaramento de UI não substitui
-  controle de acesso, criptografia em repouso e política de retenção, que são
-  decisão de back-end/infra.
-- **(e)/(f) volume/pico e troca de versão do modelo:** a fila de chamadas ao
-  mock limita a concorrência no cliente (evita desenhar uma fila "infinita"),
-  e cada documento processado carrega `modelVersion`/`promptVersion`, para que
-  uma futura troca de prompt seja rastreável. Registrado como risco: rate
-  limit, retry/backoff e migração em massa de documentos já processados são
-  responsabilidade do back-end, fora desta fatia.
-- **(g) duas pessoas na fila ao mesmo tempo:** lock otimista via `version` —
-  se o documento mudou entre abrir e confirmar a revisão, a UI avisa em vez de
-  sobrescrever silenciosamente.
+O documento pode seguir diferentes caminhos:
 
-## O que foi testado, e por quê
+```text
+processing → done
+```
 
-Nenhum teste automatizado foi escrito nesta entrega — o tempo foi priorizado
-para cobrir a fatia ponta-a-ponta e tratar os fatos do ambiente acima, que
-pareceram o critério mais explícito do enunciado. Validação foi manual: upload
-múltiplo, duplicata, conflito de edição simultânea (duas abas) e mensagens de
-erro do "modelo".
+Quando a extração tem boa confiança, o documento é concluído diretamente.
+
+```text
+processing → review → done
+```
+
+Quando a confiança é baixa, o documento vai para revisão e precisa ser conferido por uma pessoa.
+
+```text
+processing → error
+```
+
+Quando acontece algum erro durante o processamento.
+
+## Como tratei os fatos do ambiente
+
+**(a) Demora ou erro no processamento:**
+Cada documento é tratado separadamente. Enquanto o modelo processa, a tela mostra **"Processando..."** e depois atualiza para o resultado ou para erro. A interface não fica travada esperando todos os documentos terminarem.
+
+**(b) Nome de arquivo sem padrão:**
+Não uso o nome original como identificação do documento. Depois do processamento, o sistema sugere um nome organizado, que pode ser confirmado ou alterado pelo atendente.
+
+**(c) Documento enviado novamente:**
+Calculo o hash SHA-256 do arquivo antes do processamento. Se o mesmo documento já tiver sido enviado na sessão, o sistema avisa e evita processá-lo novamente. Para funcionar entre computadores diferentes, essa verificação também precisará existir no back-end.
+
+**(d) Dados pessoais sensíveis:**
+Os campos extraídos ficam escondidos por padrão e podem ser revelados quando necessário. Também não envio esses dados para o `console.log`. A proteção completa dos dados, como controle de acesso e criptografia, fica como responsabilidade do back-end.
+
+**(e)/(f) Grande quantidade de documentos e mudanças no modelo:**
+Limitei a quantidade de documentos processados ao mesmo tempo no front-end. Também registro a versão do modelo e do prompt usada em cada documento. Controle de fila, limite de requisições, novas tentativas e processamento em grande escala ficam para o back-end.
+
+**(g) Duas pessoas revisando o mesmo documento:**
+Uso a `version` do documento para identificar se ele foi alterado enquanto estava sendo revisado. Se isso acontecer, a aplicação mostra um aviso e impede que uma pessoa apague a alteração feita pela outra.
+
+## O que foi testado
+
+Não foram criados testes automatizados nesta entrega. A validação foi feita manualmente, priorizando o funcionamento completo da aplicação e os principais pontos do desafio.
+
+Foram testados:
+
+* Upload de vários arquivos.
+* Processamento e mudança de status.
+* Reenvio do mesmo documento.
+* Revisão e correção dos campos.
+* Conflito entre duas abas editando o mesmo documento.
+* Mascaramento dos dados.
+* Simulação de erros no processamento.
+* Busca dos documentos já processados.
