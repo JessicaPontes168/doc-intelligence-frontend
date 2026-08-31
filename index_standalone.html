@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<title>DOC Intelligence</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useCallback } = React;
+
+// ============================================================
+// FATOS DO AMBIENTE — como cada um foi tratado neste front-end
+// ============================================================
+// (b) nome de arquivo sem padrão (celular) ->
+//     TRATADO: nunca usamos filename original como identidade do
+//     documento. Após o processamento, sugerimos um nome padronizado
+//     (tipo + campo-chave + data) que o atendente confirma ou edita.
+//
+// (c) reenvio do mesmo documento ->
+//     TRATADO (parcial, no cliente): calculamos hash SHA-256 do
+//     conteúdo do arquivo antes de subir. Se já existe um doc com o
+//     mesmo hash, avisamos e não reprocessamos (economiza chamada
+//     paga ao modelo). RISCO CONHECIDO: essa checagem só vale dentro
+//     da sessão do navegador — dedupe definitivo tem que existir no
+//     back-end (hash + índice), porque dois atendentes em máquinas
+//     diferentes não compartilham este estado.
+//
+// (d) dado pessoal sensível ->
+//     TRATADO parcialmente: campos extraídos ficam mascarados por
+//     padrão (toggle "mostrar"), e nunca fazemos console.log de
+//     `fields`. RISCO CONHECIDO: mascaramento real de PII, criptografia
+//     em repouso, controle de acesso e retenção/expurgo são decisão de
+//     back-end/infra e não podem ser garantidos só na UI — um usuário
+//     mal-intencionado com devtools ainda vê o estado em memória.
+//
+// (e)/(f) volume/pico de 800 docs/dia e troca de versão do modelo ->
+//     REGISTRADO COMO RISCO CONHECIDO, não implementado aqui:
+//     - limitamos a CONCURRENCY chamadas simultâneas ao "modelo" no
+//       cliente, só para não desenhar uma fila que finge ser infinita;
+//       o rate-limit e a fila de verdade (retry/backoff, prioridade)
+//       são responsabilidade do back-end.
+//     - guardamos `modelVersion`/`promptVersion` em cada documento
+//       processado, para que uma futura troca de prompt não misture
+//       resultados de versões diferentes sem rastro. A migração/
+//       reprocessamento em massa fica fora do escopo desta fatia.
+//
+// (g) duas pessoas na fila de conferência ao mesmo tempo ->
+//     TRATADO: cada doc tem um `version` (lock otimista simulado). Ao
+//     abrir para revisão guardamos a versão vista; ao confirmar,
+//     comparamos com a versão atual — se mudou, avisamos o atendente
+//     em vez de sobrescrever o que a outra pessoa salvou.
+// ============================================================
+
+const MODEL_VERSION = "vendor-model-v3";
+const PROMPT_VERSION = "2026-06-a";
+const MAX_CONCURRENT_CALLS = 3; // simula backpressure em dia de pico
+
+const DOC_TYPES = [
+  { type: "RG", fields: ["nome", "filiacao", "dataNascimento", "numero", "orgaoEmissor"], nameKey: "nome" },
+  { type: "Comprovante de Residência", fields: ["nome", "endereco", "dataEmissao"], nameKey: "nome" },
+  { type: "Contracheque", fields: ["nome", "empresa", "mesReferencia", "salarioBruto"], nameKey: "nome" },
+];
+
+async function sha256(file) {
+  const buf = await file.arrayBuffer();
+  const hashBuf = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(hashBuf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function suggestFilename(type, fields, nameKey, originalExt) {
+  const raw = (fields[nameKey] || "documento").toString();
+  const slug = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const date = new Date().toISOString().slice(0, 10);
+  return `${type.replace(/\s+/g, "")}_${slug}_${date}.${originalExt}`;
+}
+
+function fakeExtract(docType) {
+  const confidence = Math.random();
+  const fields = {};
+  docType.fields.forEach((f) => (fields[f] = `${f}_extraido`));
+  return { confidence, fields, needsReview: confidence < 0.75 };
+}
+
+// fila com no máximo MAX_CONCURRENT_CALLS chamadas simultâneas ao "modelo"
+let running = 0;
+const waiting = [];
+function scheduleCall(fn) {
+  return new Promise((resolve) => {
+    const task = () => {
+      running++;
+      fn().finally(() => {
+        running--;
+        if (waiting.length) waiting.shift()();
+      }).then(resolve);
+    };
+    if (running < MAX_CONCURRENT_CALLS) task();
+    else waiting.push(task);
+  });
+}
+
+function mockProcessDocument(docType) {
+  return scheduleCall(
+    () =>
+      new Promise((resolve) => {
+        const delay = 1500 + Math.random() * 2500;
+        setTimeout(() => {
+          if (Math.random() < 0.1) {
+            resolve({ status: "error" });
+            return;
+          }
+          const result = fakeExtract(docType);
+          resolve({
+            status: result.needsReview ? "review" : "done",
+            type: docType.type,
+            confidence: result.confidence,
+            fields: result.fields,
+            modelVersion: MODEL_VERSION,
+            promptVersion: PROMPT_VERSION,
+          });
+        }, delay);
+      })
+  );
+}
+
+let nextId = 1;
+
+function maskValue(value) {
+  if (!value) return value;
+  const s = String(value);
+  if (s.length <= 4) return "•".repeat(s.length);
+  return s.slice(0, 2) + "•".repeat(s.length - 4) + s.slice(-2);
+}
+
+function App() {
+  const [docs, setDocs] = useState([]);
+  const [search, setSearch] = useState("");
+  const [selectedId, setSelectedId] = useState(null);
+  const [revealed, setRevealed] = useState({});
+  const [conflict, setConflict] = useState(null);
+  const [duplicateNotice, setDuplicateNotice] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const handleFiles = useCallback(async (fileList) => {
+    const files = Array.from(fileList);
+
+    for (const file of files) {
+      const hash = await sha256(file);
+
+      // (c) reenvio do mesmo documento — dedupe por conteúdo, não por nome
+      const dup = docs.find((d) => d.hash === hash);
+      if (dup) {
+        setDuplicateNotice(
+          `"${file.name}" tem o mesmo conteúdo de um documento já enviado ("${dup.suggestedName || dup.originalName}"). Não foi reenviado ao modelo.`
+        );
+        continue;
+      }
+
+      const id = nextId++;
+      const ext = file.name.split(".").pop() || "bin";
+      const newDoc = {
+        id,
+        hash,
+        originalName: file.name, // nunca usado como identidade, só exibido
+        suggestedName: null,
+        status: "processing",
+        type: null,
+        confidence: null,
+        fields: {},
+        previewUrl: URL.createObjectURL(file),
+        version: 0, // lock otimista — (g)
+        modelVersion: null,
+        promptVersion: null,
+        ext,
+      };
+
+      setDocs((prev) => [newDoc, ...prev]);
+
+      const docType = DOC_TYPES[Math.floor(Math.random() * DOC_TYPES.length)];
+      mockProcessDocument(docType).then((result) => {
+        setDocs((prev) =>
+          prev.map((doc) => {
+            if (doc.id !== id) return doc;
+            if (result.status === "error") {
+              return { ...doc, status: "error", version: doc.version + 1 };
+            }
+            const suggestedName = suggestFilename(
+              result.type,
+              result.fields,
+              docType.nameKey,
+              doc.ext
+            );
+            return {
+              ...doc,
+              ...result,
+              suggestedName,
+              version: doc.version + 1,
+            };
+          })
+        );
+      });
+    }
+  }, [docs]);
+
+  function toggleReveal(id, key) {
+    setRevealed((prev) => ({ ...prev, [`${id}:${key}`]: !prev[`${id}:${key}`] }));
+  }
+
+  function updateField(id, key, value) {
+    setDocs((prev) =>
+      prev.map((doc) =>
+        doc.id === id ? { ...doc, fields: { ...doc.fields, [key]: value } } : doc
+      )
+    );
+  }
+
+  function updateSuggestedName(id, value) {
+    setDocs((prev) =>
+      prev.map((doc) => (doc.id === id ? { ...doc, suggestedName: value } : doc))
+    );
+  }
+
+  // (g) lock otimista: guarda a versão vista ao abrir a revisão
+  function openReview(doc) {
+    setSelectedId(doc.id);
+    setConflict(null);
+  }
+
+  function confirmReview(id, versionSeenOnOpen) {
+    setDocs((prev) => {
+      const current = prev.find((d) => d.id === id);
+      if (!current) return prev;
+      if (current.version !== versionSeenOnOpen) {
+        // outro atendente alterou este doc enquanto revisávamos
+        setConflict(
+          "Este documento foi alterado por outra pessoa enquanto você revisava. Recarregue os dados antes de confirmar."
+        );
+        return prev;
+      }
+      return prev.map((doc) =>
+        doc.id === id ? { ...doc, status: "done", version: doc.version + 1 } : doc
+      );
+    });
+    if (!conflict) setSelectedId(null);
+  }
+
+  const filtered = docs.filter(
+    (d) =>
+      d.originalName.toLowerCase().includes(search.toLowerCase()) ||
+      (d.suggestedName || "").toLowerCase().includes(search.toLowerCase()) ||
+      (d.type || "").toLowerCase().includes(search.toLowerCase())
+  );
+
+  const selected = docs.find((d) => d.id === selectedId);
+  const versionSeenOnOpen = selected ? selected.version : null;
+
+  const statusLabel = {
+    processing: "Processando...",
+    done: "Pronto",
+    review: "Revisão pendente",
+    error: "Erro no processamento (tentar novamente)",
+  };
+
+  return (
+    <div style={{ fontFamily: "sans-serif", maxWidth: 960, margin: "0 auto", padding: 20 }}>
+      <h1>DOC Intelligence</h1>
+      <p style={{ fontSize: 12, color: "#777" }}>
+        Modelo: {MODEL_VERSION} · Prompt: {PROMPT_VERSION} · fila com até{" "}
+        {MAX_CONCURRENT_CALLS} chamadas simultâneas (simula backpressure de pico)
+      </p>
+
+      <div style={{ marginBottom: 8 }}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="image/*,application/pdf"
+          onChange={(e) => handleFiles(e.target.files)}
+        />
+      </div>
+
+      {duplicateNotice && (
+        <div
+          style={{ background: "#fff3cd", padding: 8, marginBottom: 12, fontSize: 14 }}
+          onClick={() => setDuplicateNotice(null)}
+        >
+          ⚠ {duplicateNotice} (clique para dispensar)
+        </div>
+      )}
+
+      <div style={{ marginBottom: 16 }}>
+        <input
+          type="text"
+          placeholder="Buscar por nome, nome sugerido ou tipo"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ width: "100%", padding: 8, boxSizing: "border-box" }}
+        />
+      </div>
+
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+            <th style={{ padding: 8 }}>Arquivo original</th>
+            <th style={{ padding: 8 }}>Nome sugerido</th>
+            <th style={{ padding: 8 }}>Tipo</th>
+            <th style={{ padding: 8 }}>Status</th>
+            <th style={{ padding: 8 }}></th>
+          </tr>
+        </thead>
+        <tbody>
+          {filtered.map((d) => (
+            <tr key={d.id} style={{ borderBottom: "1px solid #eee" }}>
+              <td style={{ padding: 8, color: "#888" }}>{d.originalName}</td>
+              <td style={{ padding: 8 }}>{d.suggestedName || "-"}</td>
+              <td style={{ padding: 8 }}>{d.type || "-"}</td>
+              <td style={{ padding: 8 }}>{statusLabel[d.status]}</td>
+              <td style={{ padding: 8 }}>
+                {(d.status === "review" || d.status === "done") && (
+                  <button onClick={() => openReview(d)}>Ver</button>
+                )}
+              </td>
+            </tr>
+          ))}
+          {filtered.length === 0 && (
+            <tr>
+              <td colSpan={5} style={{ padding: 8, color: "#888" }}>
+                Nenhum documento.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      {selected && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          onClick={() => setSelectedId(null)}
+        >
+          <div
+            style={{
+              background: "#fff",
+              padding: 20,
+              width: "90%",
+              maxWidth: 820,
+              maxHeight: "85vh",
+              overflowY: "auto",
+              display: "flex",
+              gap: 20,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ flex: 1 }}>
+              <img
+                src={selected.previewUrl}
+                alt={selected.originalName}
+                style={{ maxWidth: "100%", border: "1px solid #ccc" }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <h3>{selected.type}</h3>
+              <p style={{ fontSize: 12, color: "#777" }}>
+                modelo {selected.modelVersion} · prompt {selected.promptVersion}
+              </p>
+              <p>
+                Confiança: {(selected.confidence * 100).toFixed(0)}%{" "}
+                {selected.status === "review" && (
+                  <span style={{ color: "#b00" }}>(revisão necessária)</span>
+                )}
+              </p>
+
+              {conflict && (
+                <div style={{ background: "#f8d7da", padding: 8, marginBottom: 10, fontSize: 14 }}>
+                  ⚠ {conflict}
+                </div>
+              )}
+
+              <div style={{ marginBottom: 10 }}>
+                <label style={{ display: "block", fontSize: 12, color: "#555" }}>
+                  Nome padronizado do arquivo
+                </label>
+                <input
+                  type="text"
+                  value={selected.suggestedName || ""}
+                  onChange={(e) => updateSuggestedName(selected.id, e.target.value)}
+                  style={{ width: "100%", padding: 6, boxSizing: "border-box" }}
+                />
+              </div>
+
+              {Object.entries(selected.fields).map(([key, value]) => {
+                const isRevealed = revealed[`${selected.id}:${key}`];
+                return (
+                  <div key={key} style={{ marginBottom: 10 }}>
+                    <label style={{ display: "block", fontSize: 12, color: "#555" }}>
+                      {key}{" "}
+                      <button
+                        type="button"
+                        onClick={() => toggleReveal(selected.id, key)}
+                        style={{ fontSize: 11 }}
+                      >
+                        {isRevealed ? "ocultar" : "mostrar"}
+                      </button>
+                    </label>
+                    <input
+                      type="text"
+                      value={isRevealed ? value : maskValue(value)}
+                      onChange={(e) => updateField(selected.id, key, e.target.value)}
+                      disabled={!isRevealed}
+                      style={{ width: "100%", padding: 6, boxSizing: "border-box" }}
+                    />
+                  </div>
+                );
+              })}
+
+              <button onClick={() => confirmReview(selected.id, versionSeenOnOpen)}>
+                Confirmar e concluir
+              </button>{" "}
+              <button onClick={() => setSelectedId(null)}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+
+</script>
+</body>
+</html>
