@@ -38,14 +38,26 @@ sem uma API que suporte busca/paginação no servidor.
 
 ## 3. Qual decisão você menos defenderia hoje
 
-[PREENCHER — mas um candidato honesto: o lock otimista faz o atendente
-perder o trabalho de revisão feito na aba quando há conflito, em vez de
-tentar mesclar ou mostrar o que mudou. Para o volume e a frequência de
-conflito descritos (só duas pessoas na fila), provavelmente é aceitável,
-mas é a decisão mais fácil de questionar se o time de atendimento crescer.]
+Não é bem uma decisão de arquitetura, é uma falha de execução que só
+descobri testando manualmente: a lógica do lock otimista tinha dois bugs
+reais. Primeiro, o código fechava o modal de revisão antes de conseguir
+mostrar o aviso de conflito, escondendo o próprio aviso que deveria
+proteger o atendente. Segundo, a versão "vista na abertura" do documento
+nunca era de fato fixada,  era recalculada a cada render, então a
+comparação de conflito nunca dava diferente. Corrigi os dois e validei
+manualmente simulando uma edição concorrente. Isso me deixa desconfiada
+do resto do código que não testei manualmente da mesma forma  é a
+decisão que eu menos defenderia hoje não pelo design em si (a intenção do
+lock otimista está certa), mas por ter escrito "TRATADO" no comentário
+antes de validar que realmente funcionava.
 
 ## 4. Quanto tempo isso tudo levou
 
-[PREENCHER — este é o único item que descreve seu processo real, não o do
-agente. Inclua tempo lendo o enunciado, decidindo a trilha, revisando e
-ajustando o que o agente produziu, e validando manualmente.]
+## 4. Quanto tempo isso tudo levou
+
+Cerca de 11 horas no total: leitura do enunciado e escolha da trilha,
+geração da fatia vertical inicial com o agente, revisão crítica do que
+foi entregue (identificação de lacunas nos fatos do ambiente e no pacote
+de documentação), escrita/revisão da especificação, ADR e AGENTS.md, e a
+sessão final de teste manual que revelou e corrigiu os dois bugs do lock
+otimista e o bug de preview de PDF.
