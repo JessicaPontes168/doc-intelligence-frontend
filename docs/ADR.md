@@ -57,6 +57,21 @@ O sistema diminui a exposição dos dados na própria tela, mas esse recurso nã
 
 ## ADR-05 — Não usar uma biblioteca para controlar os dados da aplicação
 
+## ADR-06 — Setup do projeto: Vite + React como referência, HTML standalone como preview
+
+**Decisão:**
+Escolhi Vite + React como o setup principal do projeto, com build via `npm run dev`/`npm run build`. Antes de chegar nessa configuração, cheguei a considerar Next.js, mas descartei porque o escopo do desafio é uma fatia vertical de tela única — recursos como roteamento, SSR e a estrutura de páginas do Next não trariam benefício aqui, só complexidade extra dentro de um prazo curto.
+
+Mantive também uma versão `index_standalone.html` (React via CDN, sem build) como conveniência: permite abrir e visualizar a interface rapidamente sem instalar dependências. Essa versão não é o setup de referência do projeto.
+
+**Outras opções que considerei:**
+
+* **Next.js:** adicionaria roteamento, SSR e convenções de projeto desnecessárias para uma única tela.
+* **Somente a versão standalone (sem Vite):** mais simples de abrir, mas não reflete a estrutura de um projeto React real (sem separação de componentes em arquivos, sem bundler, sem gerenciamento de dependências via npm).
+
+**Resultado:**
+`src/App.jsx` (Vite) é a versão de referência para avaliação. `index_standalone.html` continua no repositório apenas como preview auxiliar.
+
 **Decisão:**
 Usei os recursos próprios do React, principalmente `useState`, para controlar os dados da aplicação. Não utilizei Redux, Zustand ou outra biblioteca semelhante.
 
