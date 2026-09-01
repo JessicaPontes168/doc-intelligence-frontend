@@ -46,3 +46,41 @@ customizados) foi usada.
   real de desenvolvimento incremental feito por uma pessoa. Isso deveria ser
   mencionado com transparência a quem for avaliar, ou refeito com commits que
   reflitam o processo real de quem for adaptar este material.
+
+## Segunda fase — revisão e correção conduzida em conversa
+
+Depois da entrega inicial do agente, revisei o repositório em uma sessão
+separada de chat, também com Claude, agora no papel de revisor/orientador em
+vez de gerador de código. Essa fase envolveu:
+
+* Pedi que o agente avaliasse se a implementação resolvia o desafio — ele
+  apontou lacunas reais no código (bug de preview de PDF, dedupe falhando
+  dentro do mesmo lote de upload, botão de retry sem handler) e lacunas no
+  pacote de entrega (contrato de API não formalizado).
+* Ao tentar sincronizar o repositório local com um remoto criado pela
+  interface do GitHub, o agente me orientou a resolver um conflito de
+  históricos não relacionados, identificando corretamente que o histórico
+  local (11 commits, criados como descrito acima) deveria prevalecer sobre os
+  2 commits triviais do GitHub.
+* Ao editar `prompts/prompts.md`, substitui acidentalmente o conteúdo real
+  por um placeholder ("teste"), pretendendo preencher depois — o agente
+  identificou o problema antes do commit, explicando por que isso contradiz a
+  exigência do enunciado de registrar prompts como foram escritos, não
+  reescritos depois. Revertido antes de commitar.
+* Troquei o setup de Next.js para Vite+React no meio do processo (por
+  familiaridade e prazo). O agente identificou que essa mudança precisava
+  virar uma entrada de ADR nova (ADR-06), não uma edição silenciosa do
+  código, e sinalizou uma inconsistência quando eu ia colar essa decisão
+  sobre um ADR que na verdade não existia ainda no arquivo real.
+* Identifiquei um `package-lock.json` órfão no repositório; o agente ajudou a
+  rastrear a origem (setup Vite anterior) e decidir se deveria ser mantido ou
+  descartado, dado que o repositório tinha dois setups coexistindo (Vite e
+  HTML standalone) sem o README deixar claro qual era o de referência.
+
+Essa fase mostra o uso do agente mais como revisor de processo (git,
+consistência entre documentação e código, honestidade do registro) do que
+como gerador de conteúdo novo.
+
+As decisões de fundo (arquitetura, o que entra ou sai do repositório,
+honestidade do registro de prompts) permaneceram minhas, com o agente
+atuando como checagem, não como piloto automático.

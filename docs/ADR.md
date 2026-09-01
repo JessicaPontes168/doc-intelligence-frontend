@@ -57,6 +57,16 @@ O sistema diminui a exposição dos dados na própria tela, mas esse recurso nã
 
 ## ADR-05 — Não usar uma biblioteca para controlar os dados da aplicação
 
+**Decisão:**
+Usei os recursos próprios do React, principalmente `useState`, para controlar os dados da aplicação. Não utilizei Redux, Zustand ou outra biblioteca semelhante.
+
+**Outras opções que considerei:**
+
+* **Redux, Zustand ou Context API:** seriam úteis em uma aplicação muito maior, com várias telas e muitas partes compartilhando os mesmos dados. Para este projeto, achei que adicionariam complexidade sem necessidade.
+
+**Resultado:**
+A estrutura ficou mais simples para o tamanho atual do projeto. Se a aplicação crescer bastante e passar a ter várias telas e funcionalidades, essa decisão pode ser revista.
+
 ## ADR-06 — Setup do projeto: Vite + React como referência, HTML standalone como preview
 
 **Decisão:**
@@ -71,13 +81,3 @@ Mantive também uma versão `index_standalone.html` (React via CDN, sem build) c
 
 **Resultado:**
 `src/App.jsx` (Vite) é a versão de referência para avaliação. `index_standalone.html` continua no repositório apenas como preview auxiliar.
-
-**Decisão:**
-Usei os recursos próprios do React, principalmente `useState`, para controlar os dados da aplicação. Não utilizei Redux, Zustand ou outra biblioteca semelhante.
-
-**Outras opções que considerei:**
-
-* **Redux, Zustand ou Context API:** seriam úteis em uma aplicação muito maior, com várias telas e muitas partes compartilhando os mesmos dados. Para este projeto, achei que adicionariam complexidade sem necessidade.
-
-**Resultado:**
-A estrutura ficou mais simples para o tamanho atual do projeto. Se a aplicação crescer bastante e passar a ter várias telas e funcionalidades, essa decisão pode ser revista.
